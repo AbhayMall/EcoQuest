@@ -14,19 +14,36 @@ const createSchema = Joi.object({
 /**
  * Creates a new course. The course is set to unapproved by default.
  */
+// ... existing code ...
+
 async function createCourse(req, res) {
   try {
     const { value, error } = createSchema.validate(req.body);
     if (error) {
       return res.status(400).json({ error: { message: error.details[0].message } });
     }
-    const course = await Course.create({ ...value, teacher: req.user.id, isApproved: false });
+    
+    // Get teacher's email
+    const teacher = await User.findById(req.user.id);
+    if (!teacher) {
+      return res.status(404).json({ error: { message: 'Teacher not found' } });
+    }
+    
+    const course = await Course.create({ 
+      ...value, 
+      teacher: req.user.id, 
+      teacherEmail: teacher.email, // Store teacher email
+      isApproved: false 
+    });
+    
     res.status(201).json({ data: course });
   } catch (err) {
     console.error("Error in createCourse:", err);
     res.status(500).json({ error: { message: 'Failed to create course' } });
   }
 }
+
+// ... existing code ...
 
 /**
  * Lists courses based on the user's role.

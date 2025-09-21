@@ -64,41 +64,80 @@ function Courses() {
 }
 
 function Leaderboard() {
-  const [rows, setRows] = useState([])
-  const [winners, setWinners] = useState(null)
+  const [topStudents, setTopStudents] = useState([]);
+  
   useEffect(() => { 
-    axios.get('/api/admin/leaderboard').then(r => setRows(r.data.data || []))
-    axios.get('/api/admin/leaderboard/latest').then(r => setWinners(r.data.data || null)).catch(()=>{})
-  }, [])
+    // Fetch top 3 students by ecoPoints
+    api.get('/admin/leaderboard').then(r => {
+      const sorted = (r.data.data || [])
+        .sort((a, b) => b.student.ecoPoints - a.student.ecoPoints)
+        .slice(0, 3);
+      setTopStudents(sorted);
+    }).catch(() => setTopStudents([]));
+  }, []);
+  
   return (
     <div>
-      <h3>Leaderboard</h3>
-      <ol>
-        {rows.map(row => <li key={row._id}>{row?.student?.name} — {row?.student?.ecoPoints} pts</li>)}
+      <h3>Leaderboard - Top 3 Students</h3>
+      <ol className="leaderboard-list">
+        {topStudents.map((row, index) => (
+          <li key={row._id} className="leaderboard-item">
+            <span className="rank">{index + 1}</span>
+            <span className="name">{row.student?.name}</span>
+            <span className="points">{row.student?.ecoPoints || 0} ecoPoints</span>
+          </li>
+        ))}
       </ol>
-      {winners && (
-        <div className="card" style={{marginTop:12, border:'1px solid #e5e7eb', borderRadius:12, padding:12}}>
-          <div className="card-title">Top {winners.winnersCount} Winners ({winners.period})</div>
-          <ul>
-            {(winners.winners||[]).map(u => <li key={u._id}>{u.name} — {u.ecoPoints} pts</li>)}
-          </ul>
-        </div>
-      )}
+      {topStudents.length === 0 && <p>No leaderboard data available</p>}
     </div>
-  )
+  );
 }
 
 function Notifications() {
-  const [items, setItems] = useState([])
-  useEffect(() => { axios.get('/api/notifications').then(r => setItems(r.data.data || [])) }, [])
+  const [items, setItems] = useState([]);
+  
+  useEffect(() => { 
+    api.get('/notifications').then(r => setItems(r.data.data || [])).catch(() => setItems([]));
+  }, []);
+  
+  const markAsRead = async (id) => {
+    try {
+      await api.post(`/notifications/${id}/read`);
+      setItems(items.map(item => 
+        item._id === id ? { ...item, isRead: true } : item
+      ));
+    } catch (error) {
+      console.error("Failed to mark notification as read:", error);
+    }
+  };
+
   return (
     <div>
       <h3>Notifications</h3>
-      <ul>
-        {items.map(n => <li key={n._id}>{n.title}: {n.body}</li>)}
-      </ul>
+      <div className="notification-list">
+        {items.length === 0 && <p>No notifications</p>}
+        {items.map(n => (
+          <div key={n._id} className={`notification-item ${n.isRead ? 'read' : 'unread'}`}>
+            <div className="notification-header">
+              <strong>{n.title}</strong>
+              {!n.isRead && (
+                <button 
+                  className="btn btn-sm" 
+                  onClick={() => markAsRead(n._id)}
+                >
+                  Mark Read
+                </button>
+              )}
+            </div>
+            <div className="notification-body">{n.body}</div>
+            <div className="notification-time">
+              {new Date(n.createdAt).toLocaleString()}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
-  )
+  );
 }
 
 export default function Dashboard() {
@@ -129,13 +168,92 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!user || user.role !== 'student') return
-    api.get('/teachers/approved').then(r => setApprovedTeachers(r.data.data||[])).catch(()=>setApprovedTeachers([]))
-    api.get('/progress/me').then(r => setProgressList(r.data.data||[])).catch(()=>setProgressList([]))
+    
+    // Load approved teachers
+    api.get('/teachers/approved').then(r => {
+      console.log('Approved teachers:', r.data);
+      setApprovedTeachers(r.data.data || []);
+    }).catch(() => setApprovedTeachers([]));
+    
+    // Load progress
+    api.get('/progress/me').then(r => setProgressList(r.data.data||[])).catch(()=>setProgressList([]));
+    
+    // Load selected teachers
     api.get('/auth/me/selected-teachers').then(r => {
-        setSelectedTeacherIds(r.data.data.map(t => t.id))
-        setSelectedTeachers(r.data.data)
-    })
+      console.log('Selected teachers:', r.data);
+      const selectedTeachersData = r.data.data || [];
+      setSelectedTeacherIds(selectedTeachersData.map(t => t.id || t._id));
+      setSelectedTeachers(selectedTeachersData);
+    }).catch(error => {
+      console.error('Error loading selected teachers:', error);
+      setSelectedTeacherIds([]);
+      setSelectedTeachers([]);
+    });
   }, [user?.id])
+async function openTeacherResources(teacherId, teacherEmail) {
+  try {
+    console.log('Loading courses for teacher:', teacherId, teacherEmail);
+    
+    // Get all courses
+    const res = await api.get('/courses');
+    console.log('All courses:', res.data.data);
+    
+    // Filter courses by teacher ID
+    const teacherCourses = res.data.data.filter(c => {
+      // Check if course.teacher ID matches (could be string or object)
+      let courseTeacherId;
+      
+      if (typeof c.teacher === 'object') {
+        // If teacher is an object, it could be {_id: ...} or {$oid: ...}
+        if (c.teacher._id) {
+          courseTeacherId = c.teacher._id;
+        } else if (c.teacher.$oid) {
+          courseTeacherId = c.teacher.$oid;
+        } else {
+          courseTeacherId = null;
+        }
+      } else {
+        // If teacher is a string (the ID)
+        courseTeacherId = c.teacher;
+      }
+      
+      return courseTeacherId === teacherId && c.isApproved;
+    });
+    
+    console.log('Filtered teacher courses:', teacherCourses);
+    setTeacherCourses(teacherCourses);
+    
+    if (teacherCourses.length === 0) {
+      alert('No courses found for this teacher or the courses are not yet approved.');
+    }
+  } catch (error) {
+    console.error("Failed to load teacher courses:", error);
+    setTeacherCourses([]);
+    alert('Failed to load courses. Please try again.');
+  }
+}
+  // Add this function to handle course completion
+  async function markCourseCompleted(courseId) {
+    try {
+      // Update progress
+      await api.post(`/progress/course/${courseId}/material`);
+      
+      // Add ecoPoints
+      await api.post('/gamification/complete-content', { 
+        courseId, 
+        points: 10 
+      });
+      
+      // Refresh progress list
+      const progressRes = await api.get('/progress/me');
+      setProgressList(progressRes.data.data || []);
+      
+      alert('Course marked as completed! +10 ecoPoints earned!');
+    } catch (error) {
+      console.error("Failed to mark course completed:", error);
+      alert('Failed to mark course as completed');
+    }
+  }
 
   if (!user || loading) return <div>Loading...</div>
   if (user.role === 'teacher' && teacherStatus && !teacherStatus.isApproved) {
@@ -143,14 +261,20 @@ export default function Dashboard() {
   }
 
   async function saveSelectedTeachers() {
-    await api.post('/auth/me/selected-teachers', { teacherIds: selectedTeacherIds })
-    setSelectedTeachers(approvedTeachers.filter(t => selectedTeacherIds.includes(t.id)))
-    setShowTeacherSelect(false);
-  }
-
-  async function openTeacherResources(teacherId) {
-    const res = await api.get('/courses', { params: { teacher: teacherId } })
-    setTeacherCourses(res.data.data || [])
+    try {
+      await api.post('/auth/me/selected-teachers', { teacherIds: selectedTeacherIds });
+      
+      // Update the selected teachers list
+      const updatedSelectedTeachers = approvedTeachers.filter(t => 
+        selectedTeacherIds.includes(t.id || t._id)
+      );
+      
+      setSelectedTeachers(updatedSelectedTeachers);
+      setShowTeacherSelect(false);
+    } catch (error) {
+      console.error('Failed to save selected teachers:', error);
+      alert('Failed to save teacher selection');
+    }
   }
 
   return (
@@ -203,6 +327,11 @@ export default function Dashboard() {
               <div className="card-body">An interactive Puzzle Game with Quiz.</div>
               <button className="btn" onClick={()=>window.open('http://localhost:3000/', '_blank', 'noopener,noreferrer')}>Open</button>
             </div>
+            <div className="card">
+              <div className="card-title">Tree Game Game</div>
+              <div className="card-body">An interactive Tree Game.</div>
+              <button className="btn" onClick={()=>window.open('https://joban-grewal.github.io/tree-game-frontend/', '_blank', 'noopener,noreferrer')}>Open</button>
+            </div>
           </div>
         )}
 
@@ -229,28 +358,40 @@ export default function Dashboard() {
               <div className="modal-body">
                 {approvedTeachers.length === 0 && <div>No approved teachers yet.</div>}
                 <div className="teacher-cards">
-                  {approvedTeachers.map(t => (
-                    <div key={t.id} className="teacher-card">
-                      <div className="teacher-card-header">
-                        <h5>{t.name}</h5>
-                        <span className="status-badge approved">Approved</span>
-                      </div>
-                      <div className="teacher-card-body">
-                        <div className="teacher-details">
-                          <div><strong>Email:</strong> {t.email}</div>
-                          <div><strong>Qualification:</strong> {t.qualification || '—'}</div>
-                          <div><strong>Contact:</strong> {t.contact || '—'}</div>
+                  {approvedTeachers.map(t => {
+                    const teacherId = t.id || t._id;
+                    return (
+                      <div key={teacherId} className="teacher-card">
+                        <div className="teacher-card-header">
+                          <h5>{t.name}</h5>
+                          <span className="status-badge approved">Approved</span>
                         </div>
-                        <div className="teacher-actions">
-                          <label style={{display:'flex', alignItems:'center', gap:8}}>
-                            <input type="checkbox" checked={selectedTeacherIds.includes(t.id)} onChange={(e)=>{
-                              setSelectedTeacherIds(prev => e.target.checked ? [...new Set([...prev, t.id])] : prev.filter(x => x !== t.id))
-                            }} /> Select Teacher
-                          </label>
+                        <div className="teacher-card-body">
+                          <div className="teacher-details">
+                            <div><strong>Email:</strong> {t.email}</div>
+                            <div><strong>Qualification:</strong> {t.qualification || '—'}</div>
+                            <div><strong>Contact:</strong> {t.contact || '—'}</div>
+                          </div>
+                          <div className="teacher-actions">
+                            <label style={{display:'flex', alignItems:'center', gap:8}}>
+                              <input 
+                                type="checkbox" 
+                                checked={selectedTeacherIds.includes(teacherId)} 
+                                onChange={(e)=>{
+                                  setSelectedTeacherIds(prev => 
+                                    e.target.checked 
+                                      ? [...new Set([...prev, teacherId])] 
+                                      : prev.filter(x => x !== teacherId)
+                                  )
+                                }} 
+                              /> 
+                              Select Teacher
+                            </label>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
               <div className="modal-actions">
@@ -261,38 +402,107 @@ export default function Dashboard() {
         )}
 
         {showTeacherCourses && (
-          <div className="modal-overlay" onClick={()=>setShowTeacherCourses(false)}>
-            <div className="modal" onClick={(e)=>e.stopPropagation()} style={{maxWidth:960}}>
-              <header><h3>Selected Teachers & Courses</h3><button className="btn secondary" onClick={()=>setShowTeacherCourses(false)}>Close</button></header>
-              <div className="modal-body">
-                <div className="teacher-cards">
-                  {selectedTeachers.map(t => (
-                    <div key={t.id} className="teacher-card">
-                      <div className="teacher-card-header">
-                        <h5>{t.name}</h5>
-                        <button className="btn btn-outline" onClick={()=>openTeacherResources(t.id)}>Open Courses</button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div style={{marginTop:12}}>
-                  <h4>Courses</h4>
-                  <ul>
-                    {teacherCourses.map(c => (
-                      <li key={c._id}>
-                        <div><strong>{c.title}</strong> — {c?.teacher?.name}</div>
-                        <div style={{fontSize:13, color:'#6b7280'}}>{c.description}</div>
-                        <div style={{display:'flex', gap:8, marginTop:6}}>
-                          <Link className="btn" to={`/app/courses/${c._id}`}>Open Detail</Link>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
+  <div className="modal-overlay" onClick={() => setShowTeacherCourses(false)}>
+    <div className="modal" onClick={(e) => e.stopPropagation()} style={{maxWidth: 960}}>
+      <header>
+        <h3>Selected Teachers & Courses</h3>
+        <button className="btn secondary" onClick={() => setShowTeacherCourses(false)}>Close</button>
+      </header>
+      <div className="modal-body">
+        <div className="teacher-cards">
+          {selectedTeachers.map(t => {
+            const teacherId = t.id || t._id;
+            return (
+              <div key={teacherId} className="teacher-card">
+                <div className="teacher-card-header">
+                  <h5>{t.name}</h5>
+                  <button 
+                    className="btn btn-outline" 
+                    onClick={() => openTeacherResources(teacherId, t.email)}
+                  >
+                    Load Courses
+                  </button>
                 </div>
               </div>
-            </div>
-          </div>
-        )}
+            );
+          })}
+        </div>
+        
+        {/* PASTE THE COURSES DISPLAY CODE RIGHT HERE */}
+        <div style={{marginTop: 12}}>
+          <h4>Courses</h4>
+          {teacherCourses.length === 0 ? (
+            <p>No courses available. Click "Load Courses" to see courses from selected teachers.</p>
+          ) : (
+            <ul className="course-list">
+              {teacherCourses.map(c => {
+                const courseProgress = progressList.find(p => p.course?._id === c._id);
+                const isCompleted = courseProgress?.progressPercent === 100;
+                
+                return (
+                  <li key={c._id} className="course-item">
+                    <div>
+                      <strong>{c.title}</strong>
+                      {isCompleted && <span className="badge completed">Completed</span>}
+                    </div>
+                    <div style={{fontSize: 13, color: '#6b7280'}}>{c.description}</div>
+                    
+                    {/* Display image if available */}
+                    {c.imageUrl && (
+                      <div style={{marginTop: 8}}>
+                        <img 
+                          src={c.imageUrl} 
+                          alt={c.title}
+                          style={{maxWidth: '100%', maxHeight: '200px', borderRadius: '8px'}}
+                        />
+                      </div>
+                    )}
+                    
+                    {/* Display video if available */}
+                    {c.videoUrl && (
+                      <div style={{marginTop: 8}}>
+                        <div style={{fontWeight: 'bold', marginBottom: 4}}>Intro Video:</div>
+                        <a href={c.videoUrl} target="_blank" rel="noopener noreferrer" className="btn btn-outline">
+                          Watch Video
+                        </a>
+                      </div>
+                    )}
+                    
+                    {/* Show materials count */}
+                    {c.materials && c.materials.length > 0 && (
+                      <div style={{fontSize: 13, color: '#6b7280', marginTop: 4}}>
+                        Materials: {c.materials.length}
+                      </div>
+                    )}
+                    
+                    <div style={{display: 'flex', gap: 8, marginTop: 12, alignItems: 'center'}}>
+                      <Link className="btn" to={`/app/courses/${c._id}`}>View Details</Link>
+                      
+                      {!isCompleted && (
+                        <button 
+                          className="btn btn-success" 
+                          onClick={() => markCourseCompleted(c._id)}
+                        >
+                          Mark as Completed
+                        </button>
+                      )}
+                      
+                      {courseProgress && (
+                        <span>Progress: {courseProgress.progressPercent}%</span>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+        {/* END OF COURSES DISPLAY CODE */}
+        
+      </div>
+    </div>
+  </div>
+)}
 
         {showProgress && (
           <div className="modal-overlay" onClick={()=>setShowProgress(false)}>
@@ -381,7 +591,7 @@ function TeacherOnboarding() {
             <label>Contact</label>
             <input name="contact" value={form.contact} onChange={handleChange} required />
             <label>Details</label>
-            <input name="details" value={form.details} onChange={handleChange} required />
+            <input name="details" value={form.details} onChange={(e) => setForm({...form, details: e.target.value})} required />
             <label>Upload Resume (PDF)</label>
             <input type="file" accept="application/pdf" ref={fileInputRef} onChange={(e)=>setResumeFile(e.target.files?.[0]||null)} />
             <button type="submit">Submit for Review</button>
